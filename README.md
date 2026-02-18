@@ -1,4 +1,4 @@
-# Google Takeout Fixer
+# Google Takeout Metadata (Creation Date/Location) Fixer
 
 Fixes photo and video metadata after a Google Takeout export.
 
