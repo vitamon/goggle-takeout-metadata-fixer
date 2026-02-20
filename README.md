@@ -48,6 +48,28 @@ Output:
 Done: 338 updated, 0 errors.
 ```
 
+### Set year for all files in a folder
+
+If you need to bulk-correct the year on file timestamps (e.g. files were imported with the wrong year), use:
+
+```bash
+python3 set_year.py <folder> <year>
+```
+
+Example:
+
+```bash
+python3 set_year.py "/Volumes/photos/2020_trip" 2020
+```
+
+Use `--recursive` / `-r` to include subfolders:
+
+```bash
+python3 set_year.py "/Volumes/photos/2020_trip" 2020 --recursive
+```
+
+The script updates both modification and access timestamps, replacing only the year while leaving month, day, and time unchanged.
+
 ### Remove sidecar JSON files
 
 After fixing metadata, the `.json` sidecar files are no longer needed. To remove them:
