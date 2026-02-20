@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Fix Google Takeout photo metadata: set EXIF datetime and GPS from sidecar JSON files."""
 
+import argparse
 import json
 import os
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from typing import Optional
 
 import piexif
 
@@ -13,11 +15,18 @@ import piexif
 def collect_files(input_path: Path) -> list[tuple[Path, Path]]:
     """Return (media_path, json_path) pairs for all files that have a sidecar JSON.
 
-    Each sidecar is named <file>.<ext>.json, so stripping .json gives the media file.
+    Supports two sidecar naming conventions:
+      - <file>.<ext>.json  (old format)
+      - <file>.<ext>.supplemental-metadata.json  (new format)
     """
     pairs = []
     for json_path in sorted(input_path.rglob('*.json')):
-        media_path = json_path.with_suffix('')
+        name = json_path.name
+        if name.endswith('.supplemental-metadata.json'):
+            stem = name[: -len('.supplemental-metadata.json')]
+        else:
+            stem = json_path.with_suffix('').name
+        media_path = json_path.parent / stem
         if media_path.is_file():
             pairs.append((media_path, json_path))
     return pairs
@@ -63,13 +72,21 @@ def read_exif_before(exif_dict: dict) -> tuple[str, str]:
     return dt_str, gps_str
 
 
-def process_image(img_path: Path, meta: dict) -> tuple[str, str, str, str]:
-    """Apply metadata from JSON to image EXIF and file timestamps, logging before/after."""
+def process_image(img_path: Path, meta: dict, tz_offset: Optional[float] = None) -> tuple[str, str, str, str]:
+    """Apply metadata from JSON to image EXIF and file timestamps, logging before/after.
+
+    Returns (before_dt, after_dt, before_gps, after_gps).
+    tz_offset: hours from UTC (e.g. 2.0 for UTC+2). None = local system timezone.
+    """
     photo_taken_ts = int(meta.get('photoTakenTime', {}).get('timestamp', 0))
     if not photo_taken_ts:
         raise ValueError("no photoTakenTime in metadata")
 
-    dt = datetime.fromtimestamp(photo_taken_ts, tz=timezone.utc)
+    if tz_offset is None:
+        dt = datetime.fromtimestamp(photo_taken_ts)
+    else:
+        tz = timezone(timedelta(hours=tz_offset))
+        dt = datetime.fromtimestamp(photo_taken_ts, tz=tz).replace(tzinfo=None)
     exif_dt = dt.strftime('%Y:%m:%d %H:%M:%S').encode()
 
     geo = meta.get('geoData', {})
@@ -84,6 +101,8 @@ def process_image(img_path: Path, meta: dict) -> tuple[str, str, str, str]:
         alt = geo_exif.get('altitude', 0.0)
 
     has_gps = lat != 0.0 or lon != 0.0
+    after_dt = dt.strftime('%Y:%m:%d %H:%M:%S')
+    after_gps = f"lat={lat:.5f} lon={lon:.5f}" if has_gps else 'none'
 
     # Try EXIF update (JPEG only); fall back to timestamps-only for other formats
     before_dt = before_gps = 'n/a'
@@ -113,18 +132,22 @@ def process_image(img_path: Path, meta: dict) -> tuple[str, str, str, str]:
 
     os.utime(str(img_path), (photo_taken_ts, photo_taken_ts))
 
-    after_dt = dt.strftime('%Y:%m:%d %H:%M:%S')
-    after_gps = f"lat={lat:.5f} lon={lon:.5f}" if has_gps else 'none'
-
     return before_dt, after_dt, before_gps, after_gps
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: fix_takeout.py <input_path>")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description='Fix Google Takeout photo metadata: set EXIF datetime and GPS from sidecar JSON files.'
+    )
+    parser.add_argument('input_path', help='Directory containing photos and sidecar JSON files')
+    parser.add_argument(
+        '--tz', type=float, default=None, metavar='OFFSET',
+        help='Timezone offset in hours from UTC (e.g. 2 for UTC+2, -5 for UTC-5). '
+             'Defaults to local system timezone.'
+    )
+    args = parser.parse_args()
 
-    input_path = Path(sys.argv[1])
+    input_path = Path(args.input_path)
     if not input_path.is_dir():
         print(f"Error: not a directory: {input_path}")
         sys.exit(1)
@@ -138,8 +161,8 @@ def main():
             meta = json.load(f)
 
         try:
-            before_dt, after_dt, before_gps, after_gps = process_image(img_path, meta)
-            print(f"{rel}  |  date: {before_dt} -> {after_dt}  |  location: {before_gps} -> {after_gps}")
+            before_dt, after_dt, before_gps, after_gps = process_image(img_path, meta, args.tz)
+            print(f"OK    {rel}  |  date: {before_dt} -> {after_dt}  |  location: {before_gps} -> {after_gps}")
             processed += 1
         except Exception as exc:
             print(f"ERROR {rel}: {exc}")
